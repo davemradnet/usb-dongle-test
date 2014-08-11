@@ -1,0 +1,430 @@
+#################################################
+# System Configuration                          # 
+#################################################
+
+# Important! COMM_TYPE must match the definition
+# in hardware.xml
+const COMM_TYPE = 3  # Endpoint is USB (3=USB)
+const DFU_REBOOT_HANDLE = 1
+const WATERMARK_DISABLE = 0
+const WATERMARK_IGNORE  = $ff
+const WATERMARK_RX_LEN = 2
+
+procedure zero_fill(len, _var())
+  memset(_var(0), 0, len)
+end
+#################################################
+
+
+#################################################
+# Tx Procedures                                 #
+# Requires System Configuration                 #
+#################################################
+
+# Important
+# BGSCRIPT Call Stack is only 100 bytes
+# So avoid nesting or using large byte arrays
+
+dim comm_tx_data(16)
+dim comm_tx_len
+
+# not sure if this belongs here or not
+procedure comm_clear_rxtx()
+  # Disable watermarks (clear tx and rx)
+  call system_endpoint_set_watermarks(COMM_TYPE, WATERMARK_DISABLE, WATERMARK_DISABLE)
+end
+
+procedure comm_tx(len, tx_data())
+  call zero_fill(32, comm_tx_data(0:32))
+  comm_tx_len = len 
+  comm_tx_data(0:comm_tx_len) = tx_data(0:len)
+  # enable TX Watermark at length of data to transmit
+  call system_endpoint_set_watermarks(COMM_TYPE, WATERMARK_IGNORE, comm_tx_len)
+end 
+
+# tx watermark reached
+event system_endpoint_watermark_tx(endpoint, avail_space)
+  if endpoint = COMM_TYPE && comm_tx_len > 0 then
+    # disable TX watermark
+    call system_endpoint_set_watermarks(COMM_TYPE, WATERMARK_IGNORE, WATERMARK_DISABLE)
+    
+    # send tx
+    call system_endpoint_tx(COMM_TYPE, comm_tx_len, comm_tx_data(0:comm_tx_len))
+    
+    # reset tx values
+    comm_tx_len = 0
+    call zero_fill(32, comm_tx_data(0:32))
+  end if
+end
+#################################################
+
+#################################################
+# Rx Error Handling                             #
+# Requires System Configuration                 # 
+# Requires Tx Procedures                        #
+#################################################
+# ERROR Constants
+const ERR = $ff
+const ERR_RX_DATA_OVFLW  = $01
+const ERR_CMD_TOO_SMALL  = $11
+const ERR_CMD_UNKNOWN    = $12
+const ERR_CMD_DATA_OVFLW = $20
+const ERR_INVALID_PIN    = $30
+
+
+dim err_tx(2)
+
+procedure err(code())
+  err_tx(0:1) = ERR
+  err_tx(1:1) = code(0:1)
+end
+#################################################
+
+#################################################
+# Rx Command Handling                           #
+# Requires System Configuration                 # 
+# Requires Tx Procedures                        #
+#################################################
+
+# COMMAND Constants
+# First Byte  - Command Class
+#    0x - UART Admin/DFU Reboot commands
+#    1x - System Information Commands
+#    8x - Application Administration Commands (PIN reset, factory default, Lock, etc)
+#    9x - Application Logic Commands (Advertisement Data)
+# Second Byte - Command Data Length
+#    This will usually include the PIN (4 bytes)
+
+
+const NOOP        = $0000  # return 0x0001
+const ECHO4       = $0400  # 0x0004
+const DFU_REBOOT2  = $0401  # 0x0104 No response
+
+
+# Command procedures
+# Command / Command Data / Response
+# 
+#  NOOP / <No Cmd Data> / $0000
+#  ECHO4/ xx xx xx xx   /  Echos 4 byte command data
+
+
+
+procedure cmd_noop()
+  call comm_tx(2, $0100)
+end
+
+procedure cmd_echo4(cmd_data())
+  call comm_tx(4, cmd_data(0:4))
+end
+
+procedure cmd_unknown(len, cmd_and_data())
+  call comm_tx(len, cmd_and_data(0:len))
+end
+#################################################
+
+#################################################
+# STATUS Handling                               #
+# Requires System Configuration                 # 
+# Requires Tx Procedures                        #
+#################################################
+# STATUS Constants
+const STATUS = $fe
+const STAT_DFU_REBOOT = $01
+
+dim status_tx(2)
+
+procedure status(code())
+  status_tx(0:1) = STATUS
+  status_tx(1:1) = code(0:1)
+  call comm_tx(2,status_tx(0:2))
+end
+#################################################
+
+# constants
+
+#################################################
+# Application Logic                             #
+#################################################
+const UP_TIMER_HANDLE = 9
+
+
+# variables
+
+dim data(30)
+dim mac_addr(6)  #Bluetooth MAC Address
+dim dev_model(24)
+dim up_time(4)
+
+dim debug_cmd_count(1)
+
+event system_boot( major, minor, patch, build, ll_version, protocol_version, hw )
+  debug_cmd_count(0:1) = $00
+  # Disable watermarks (clear tx and rx)
+  # call system_endpoint_set_watermarks(5, 0, 0) # disable watermarks
+  call comm_clear_rxtx()
+
+	# initialize device model
+	dev_model(0:24) = "CDC Test"
+	
+	
+	# initialize time
+	
+	up_time(0:4) = $00000000
+	
+	
+	# get mac address
+	
+	call system_address_get()(mac_addr(0:6))
+	
+	
+	# update gatt database for development
+	
+	call attributes_write(xgatt_dev_model, 0, 24, dev_model(0:24))
+  
+  # set transmit power
+  call hardware_set_txpower(0)
+  
+	# Set advertisement interval to 100 to 500ms. Use all advertisement channels
+	# gap_set_adv_parameters (min, max, channels)
+	
+	# call gap_set_adv_parameters( 20, 100, 7 )
+  call gap_set_adv_parameters(3200, 6400, 7)
+	
+	
+	# set to advertising mode
+	# gap_set_mode(discoverable mode, connectable mode)
+	#   Gap discoverable modes
+	#      0: gap_non_discoverable
+	#      1: gap_limited_discoverable
+	#      2: gap_general_discoverable
+	#      3: gap_broadcast -- same as 0
+	#      4: gap_user_data -- User defined advertisement
+	#      0x80: gap_enhanced_broadcasting -- report back via Scan Response event
+	#   Gap connectable modes
+	#      0: gap_non_connectable
+	#      1: gap_directed_connectable
+	#      2: gap_undirected_connectable
+	#      3: gap_scannable_connectable
+	#      4: gap_user_data -- Same as 2, but uses ADV_SCAN_IND packets
+	
+	call gap_set_mode( gap_general_discoverable, gap_undirected_connectable )
+	
+	
+	# Initialize iBeacon advertisement data
+	# Flags = LE General Discovery, single mode device (02 01 06)
+	# Measured power = -58 ($c6)
+
+	
+	# Flags
+	
+	data( 0:1) = $02 # AD Flags Length
+	data( 1:1) = $01 # AD Flags ype
+	data( 2:1) = $06 # AD Flags
+
+	# Advertising Data
+
+	data( 3:1) = $1b # AD Length
+	data( 4:1) = $ff # AD Type
+	
+	data( 5:2) = $004c # Manufacture ID
+	data( 7:2) = $acbe # Beacon Code
+
+	# Beacon ID
+  data(10:1) = $00
+  data(11:1) = $01
+  data(12:1) = $02
+  data(13:1) = $03
+  data(14:1) = $04
+  data(15:1) = $05
+  data(16:1) = $06
+  data(17:1) = $07
+  data(18:1) = $08
+  data(19:1) = $09
+  data(20:1) = $0A
+  data(21:1) = $0B
+  data(22:1) = $0C
+  data(23:1) = $0D
+  data(24:1) = $0E
+  data(25:1) = $0F
+  data(26:1) = $10
+  data(27:1) = $11
+  data(28:1) = $12
+  data(29:1) = $13
+
+  # Reference RSSI
+  data(30:1) = $00
+
+  # MFG Reserved
+  data(31:1) = $00
+  
+	call gap_set_adv_data(0, 32, data(0:32))
+  
+	# Timer that repeats once per second
+	# hardware_set_soft_timer( delay, handle, singleshot)
+	
+  # Dev Board Timer - Calcs for my dev board
+  # 32000 -> 768 iterations = 753 seconds +/- 1
+  # 32768 -> 768 iterations = 772 seconds +/- 1
+	# call hardware_set_soft_timer(32768, UP_TIMER_HANDLE, 0)
+  
+  ##############################################################
+  #                                                            #
+  #  DO NOT DELETE - REQUIRED TO PREVENT BRICKING BLED112      #
+  #  This sets the receive watermark level                     #
+  ##############################################################
+  # enable watermark event on endpoint                         #
+  # REQUIRED to enable COMM_TYPE communications                #
+  
+  call system_endpoint_set_watermarks(COMM_TYPE, WATERMARK_RX_LEN, WATERMARK_IGNORE)
+  
+  ##############################################################
+end
+
+# Timer event listener
+# Since there is only one system timer, we use the handle to differentiate between different timers
+event hardware_soft_timer(handle)
+
+  if handle = DFU_REBOOT_HANDLE then
+    call system_reset(1)
+  end if
+
+end
+
+
+##############################################################
+#                                                            #
+#  DO NOT DELETE - REQUIRED TO PREVENT BRICKING BLED112      #
+#  Interprets Received Communications
+#                                                            #
+##############################################################
+#                                                            #
+# watch for new data from COMM_TYPE
+# NOTE! This function or something similar MUST remain in the BGScript to
+# allow access to DFU mode over COMM_TYPE with a special trigger character
+
+# RECEIVED DATA
+# Expected structure 
+#   Cmd (1 byte)
+#   Cmd Len (1 byte)
+#   Cmd Data (Cmd Len bytes)
+
+dim ret_result       # COMM_TYPE RX data operation return code
+dim ret_data_size    # COMM_TYPE RX data size
+const COMM_MAX = 8 # Maximum size of comm
+dim ret_data(8)      # COMM_TYPE data container
+
+dim cmd_len(1)
+dim signed_cmd_len(4)
+
+dim cmd_data_max_len(1)
+dim cmd_data(4) # size is 2 bytes less than data container
+
+const CMD_SYS_NOOP = $0000  # return 0x0001
+const CMD_SYS_ECHO = $0400  # 4 byte value to echo
+ 
+dim custom_response(4)
+
+
+event system_endpoint_watermark_rx(endpoint, data_len)     
+  call system_endpoint_rx(endpoint, data_len)(ret_result, ret_data_size, ret_data(0:ret_data_size))
+  
+  # Data via any endpoint is being handled
+  # ToDo: Restrict to a single endpoint?  
+  
+  debug_cmd_count(0:1) = debug_cmd_count(0:1) + 1
+  
+  ###############################################
+  # DEVELOPMENT HELPERS                         #
+  ###############################################
+  # Update debug Beacon
+  data(9:1) = debug_cmd_count(0:1)
+  data(10:1) = $ee # separator
+  signed_cmd_len(0:4) = ret_data_size
+  cmd_len(0:1) = signed_cmd_len(0:1)
+  data(11:1) = cmd_len(0:1)
+  data(12:1) = $ee # separator
+  data(13:COMM_MAX) = ret_data(0:COMM_MAX)
+  data(13+COMM_MAX:1) = $ee
+
+  # Send rx stats and data to beacon for debugging
+  call gap_set_adv_data(0, 32, data(0:32))
+  
+  # Failsafe DFU code (used during development)
+  if ret_data(0:1)=$aa then
+    # set timer to enter DFU mode after 1 second
+    call system_reset(1)
+  end if
+  ###############################################
+
+  ###############################################
+  #  RECEIVE DATA PROCESSING                    #
+  ###############################################  
+  #raise error and exit if comm result is too big
+  if ret_data_size > COMM_MAX then
+    call err(ERR_RX_DATA_OVFLW)
+    call comm_tx(2, err_tx(0:2))
+    return # exit from event
+  end if
+  
+  ###############################################
+  # COMMAND PROCESSING                          #
+  ###############################################
+    
+  # Commands must be at least two bytes
+  if ret_data_size < 2 then
+    call err(ERR_CMD_TOO_SMALL)  # set error
+    call comm_tx(2, err_tx(0:2))      # tx response
+    return # exit from event    
+  end if  
+  
+  if NOOP=ret_data(0:2) && ret_data_size=2 then
+    call comm_tx(2, $0100)
+  end if
+ 
+  
+  call err(ERR_CMD_UNKNOWN)
+  custom_response(0:2) = err_tx(0:2)
+  custom_response(2:4) = ret_data(0:2)
+  call comm_tx(4, custom_response(0:4))
+end # watermark rx
+                                                            
+##############################################################
+
+
+
+
+# catch remote write of characteristic value
+
+event attributes_value(connection, reason, handle, offset, value_len, value_data)
+
+  ##############################################################
+  #                                                            #
+  #  DO NOT DELETE - REQUIRED TO PREVENT BRICKING BLED112      #
+  #                                                            #
+  ##############################################################
+  #                                                            #
+
+    # NOTE! This function or something similar MUST remain in the BGScript to
+    # allow access to DFU mode by triggering from a characteristic value update
+    if handle = c_dfu_reboot_trigger then
+        # remote client requested DFU reboot
+        # NOTE: this will reset on ANY written value. You can check for a specific
+        # byte or set of bytes in the "value_data" argument if desired.
+        call system_reset(1)
+    end if
+    
+  #                                                            #
+  ##############################################################
+
+end
+
+
+# Disconnection event listener
+
+event connection_disconnected(handle, result)
+
+	# Reset connection parameters
+    call gap_set_mode( gap_general_discoverable, gap_undirected_connectable )
+    call gap_set_adv_parameters(3200, 6400, 7)
+
+end

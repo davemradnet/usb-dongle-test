@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+  <service uuid="1800">
+    <description>Generic Access Profile</description>
+    <!-- Device name -->
+    <characteristic uuid="2a00">
+      <properties read="true" const="true" />
+      <value>CDC Test</value>
+    </characteristic>
+    <!-- Appearance: Generic tag -->
+    <characteristic uuid="2a01">
+      <properties read="true" const="true" />
+      <value type="hex">0200</value>
+    </characteristic>
+  </service>
+
+  <service uuid="180A">
+    <description>Device Information</description>
+    <characteristic uuid="2a29">
+      <properties read="true" const="true" />
+      <value>DM</value>
+      <description>Manufacturer Name String</description>
+    </characteristic>
+    <characteristic uuid="2a24">
+      <properties read="true" const="true" />
+      <value>0</value>
+      <description>Model Number String</description>
+    </characteristic>
+    <characteristic uuid="2a26">
+      <properties read="true" const="true" />
+      <value>0.1</value>
+      <description>Firmware Revision String</description>
+    </characteristic>
+    <characteristic uuid="2a27">
+      <properties read="true" const="true" />
+      <value>1.0</value>
+      <description>Hardware Revision String</description>
+    </characteristic>
+  </service>
+
+  <service uuid="22ee29cd-1477-4acf-9d5c-4923d7591a04" advertise="true">
+    <description>Configuration</description>
+    <characteristic uuid="AAA0" id="xgatt_dev_model">
+      <description>Device Model</description>
+      <properties read="true" write="true" />
+      <value length="24">0000000000000</value>
+    </characteristic>
+  </service>
+
+  <!-- custom service for allowing DFU-mode reboots -->
+  <service uuid="4f3edfe7-6f17-4f87-b2ee-ea2cdac0dd02">
+    <description>DFU Reboot Service</description>
+    <!-- custom characteristic for allowing DFU-mode reboots -->
+    <characteristic uuid="590c4bd9-b5e2-4a1a-867e-9b033ed1eadb" id="c_dfu_reboot_trigger">
+      <description>DFU Reboot Trigger</description>
+      <properties write="true" />
+      <value length="1" />
+    </characteristic>
+  </service>
+</configuration>
